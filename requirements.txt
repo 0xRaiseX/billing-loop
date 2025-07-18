@@ -1,0 +1,3 @@
+motor
+httpx
+prometheus_client
