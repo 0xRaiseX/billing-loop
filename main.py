@@ -17,6 +17,8 @@ cost_total = Counter('billing_cost_total', 'Total cost billed', ['subdomain'])
 partial_cost_total = Counter('billing_partial_cost_total', 'Total partial cost billed due to insufficient funds', ['subdomain'])
 no_funds_total = Counter('billing_no_funds_total', 'Total number of deployments stopped due to insufficient funds', ['subdomain'])
 
+#### СЧЕТКО НА КОЛИЧЕСВТО СОЗДАННЫХ СЕРВИСОВ
+
 MONGO_URL = os.getenv("MONGO_URL")
 DB_NAME = os.getenv("DB_NAME")
 BILLING_INTERVAL = timedelta(minutes=60)
@@ -115,14 +117,16 @@ async def metrics_save_loop():
     
 async def billing_loop():
     # Запуск HTTP-сервера для Prometheus
+    logger.info(f'Billing loop is starting...')
     start_http_server(8000)
-    
+    logger.info(f'HTTP Server Started')
     # Загрузка начальных значений метрик
     await load_metrics_state()
+    logger.info(f'Metrics has been loading')
     
     # Запуск фоновой задачи для сохранения метрик
     asyncio.create_task(metrics_save_loop())
-
+    logger.info(f'Задача создана')
     while True:
         now = datetime.now(timezone.utc)
         cursor = deployments_collection.find({"status": "running"})
