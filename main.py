@@ -40,6 +40,8 @@ users_collection = db["users"]
 deployments_collection = db["deployments"]
 metrics_collection = db["metrics"]
 
+K8S_MANAGER = "http://k8s-manager-service"
+    
 # Настройка логгера
 logger = logging.getLogger("billing")
 logger.setLevel(logging.INFO)
@@ -129,7 +131,7 @@ async def billing_loop():
         now = datetime.now(timezone.utc)
         cursor = deployments_collection.find({"status": "running"})
         async for deployment in cursor:
-            namespace = deployment.get("namespace")  # Замена subdomain на namespace
+            id = deployment.get("user_id")
             lastTimePay = deployment.get("lastTimePay")
 
             lastTimePay = lastTimePay.replace(tzinfo=timezone.utc)
@@ -142,9 +144,9 @@ async def billing_loop():
             # Увеличиваем счетчик обработанных развертываний
             deployments_processed.inc()
 
-            user = await users_collection.find_one({"namespace": namespace})  # Замена subdomain на namespace
+            user = await users_collection.find_one({"_id": id})  # Замена subdomain на namespace
             if not user:
-                logger.warning(f'"Пользователь с namespace {namespace} не найден"')
+                logger.warning(f'"Пользователь с _id {str(id)} не найден"')
                 errors_total.labels(error_type="user_not_found").inc()
                 continue
 
@@ -157,7 +159,7 @@ async def billing_loop():
             user_balance_value = user["balance"]
 
             # Обновляем gauge с текущим балансом пользователя
-            user_balance.labels(namespace=namespace).set(user_balance_value)
+            user_balance.labels(namespace=user['namespace']).set(user_balance_value)
 
             if user_balance_value >= total_cost:
                 await users_collection.update_one(
@@ -169,7 +171,7 @@ async def billing_loop():
                     {"$set": {"lastTimePay": lastTimePay + BILLING_INTERVAL * intervals_passed}}
                 )
                 # Регистрируем полное списание
-                cost_total.labels(namespace=namespace).inc(total_cost)
+                cost_total.labels(namespace=user['namespace']).inc(total_cost)
                 logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {namespace}"')
             else:
                 max_intervals = floor(user_balance_value / BILLING_COST)
@@ -184,7 +186,7 @@ async def billing_loop():
                         {"$set": {"lastTimePay": lastTimePay + BILLING_INTERVAL * max_intervals}}
                     )
                     # Регистрируем частичное списание
-                    partial_cost_total.labels(namespace=namespace).inc(partial_cost)
+                    partial_cost_total.labels(namespace=user['namespace']).inc(partial_cost)
                     logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {namespace}"')
                 else:
                     await deployments_collection.update_one(
@@ -195,11 +197,11 @@ async def billing_loop():
                         }}
                     )
                     # Регистрируем остановку из-за недостатка средств
-                    no_funds_total.labels(namespace=namespace).inc()
+                    no_funds_total.labels(namespace=user['namespace']).inc()
 
-                    k8s_manager_url = "http://k8s-manager-service.default.svc.cluster.local:80/set/scale"
+                    k8s_manager_url = K8S_MANAGER + "/api/v1/set/scale"
                     data = {
-                        "namespace": namespace,  # Замена subdomain на namespace
+                        "namespace": user['namespace'], 
                         "deployment_name": deployment.get("deployment_name"),
                         "replicas": 0,
                     }
@@ -208,14 +210,11 @@ async def billing_loop():
                             response = await client.post(k8s_manager_url, json=data)
                             response.raise_for_status()
                             data_response = response.json()
-                    except httpx.HTTPStatusError as e:
-                        logger.error(f'"K8s manager error: {e.response.text}"')
-                        errors_total.labels(error_type="k8s_manager_error").inc()
                     except Exception as e:
                         logger.error(f'"Failed to contact k8s-manager: {str(e)}"')
                         errors_total.labels(error_type="k8s_contact_failed").inc()
 
-                    logger.warning(f'"[NOFUNDS] Недостаточно средств у пользователя {namespace}"')
+                    logger.warning(f'"[NOFUNDS] Недостаточно средств у пользователя {str(id)}"')
 
         await asyncio.sleep(60)
 
