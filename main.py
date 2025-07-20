@@ -1,7 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
-from datetime import datetime, timezone
 import httpx
 from motor.motor_asyncio import AsyncIOMotorClient
 from math import floor
@@ -10,15 +9,15 @@ import logging
 import sys
 from prometheus_client import Counter, Gauge, start_http_server
 
+# Определение метрик с ключом namespace вместо subdomain
 deployments_processed = Counter('billing_deployments_processed_total', 'Total number of deployments processed')
 errors_total = Counter('billing_errors_total', 'Total number of errors in billing loop', ['error_type'])
-user_balance = Gauge('billing_user_balance', 'Current balance of users', ['subdomain'])
-cost_total = Counter('billing_cost_total', 'Total cost billed', ['subdomain'])
-partial_cost_total = Counter('billing_partial_cost_total', 'Total partial cost billed due to insufficient funds', ['subdomain'])
-no_funds_total = Counter('billing_no_funds_total', 'Total number of deployments stopped due to insufficient funds', ['subdomain'])
+user_balance = Gauge('billing_user_balance', 'Current balance of users', ['namespace'])
+cost_total = Counter('billing_cost_total', 'Total cost billed', ['namespace'])
+partial_cost_total = Counter('billing_partial_cost_total', 'Total partial cost billed due to insufficient funds', ['namespace'])
+no_funds_total = Counter('billing_no_funds_total', 'Total number of deployments stopped due to insufficient funds', ['namespace'])
 
-#### СЧЕТКО НА КОЛИЧЕСВТО СОЗДАННЫХ СЕРВИСОВ
-
+# СЧЕТЧИК НА КОЛИЧЕСТВО ОБРАБОТАННЫХ РАЗВЕРТЫВАНИЙ
 MONGO_URL = os.getenv("MONGO_URL")
 DB_NAME = os.getenv("DB_NAME")
 BILLING_INTERVAL = timedelta(minutes=60)
@@ -27,23 +26,24 @@ METRICS_SAVE_INTERVAL = 300
 if DB_NAME is None:
     raise ValueError("DB_NAME environment variable is not set.")
 
-# === Tarifs ===
+# Загрузка тарифов
 with open('tarifs.json', 'r') as f:
     tarifs = json.load(f)
 
 with open('tarifs_db.json', 'r') as f:
     tarifs_db = json.load(f)
 
+# Подключение к MongoDB
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 users_collection = db["users"]
 deployments_collection = db["deployments"]
 metrics_collection = db["metrics"]
 
-# --- Настройка логгера ---
+# Настройка логгера
 logger = logging.getLogger("billing")
 logger.setLevel(logging.INFO)
-handler = logging.StreamHandler(sys.stdout) 
+handler = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter('{"timestamp":"%(asctime)s", "level":"%(levelname)s", "message":%(message)s}')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
@@ -75,7 +75,7 @@ async def save_metrics_state():
         upsert=True
     )
 
-    # Сохранение errors_total для каждой комбинации меток
+    # Сохранение errors_total
     for labels, metric in errors_total._metrics.items():
         await metrics_collection.update_one(
             {"name": "billing_errors_total", "labels": labels},
@@ -114,26 +114,24 @@ async def metrics_save_loop():
     while True:
         await save_metrics_state()
         await asyncio.sleep(METRICS_SAVE_INTERVAL)
-    
+
 async def billing_loop():
-    # Запуск HTTP-сервера для Prometheus
-    logger.info(f'Billing loop is starting...')
+    logger.info('Billing loop is starting...')
     start_http_server(8000)
-    logger.info(f'HTTP Server Started')
-    # Загрузка начальных значений метрик
+    logger.info('HTTP Server Started')
     await load_metrics_state()
-    logger.info(f'Metrics has been loading')
-    
-    # Запуск фоновой задачи для сохранения метрик
+    logger.info('Metrics has been loaded')
+
     asyncio.create_task(metrics_save_loop())
-    logger.info(f'Задача создана')
+    logger.info('Metrics save task created')
+
     while True:
         now = datetime.now(timezone.utc)
         cursor = deployments_collection.find({"status": "running"})
         async for deployment in cursor:
-            subdomain = deployment.get("subdomain")
+            namespace = deployment.get("namespace")  # Замена subdomain на namespace
             lastTimePay = deployment.get("lastTimePay")
-            
+
             lastTimePay = lastTimePay.replace(tzinfo=timezone.utc)
             delta = now - lastTimePay
 
@@ -141,20 +139,27 @@ async def billing_loop():
             if intervals_passed <= 0:
                 continue
 
-            user = await users_collection.find_one({"subdomain": subdomain})
+            # Увеличиваем счетчик обработанных развертываний
+            deployments_processed.inc()
+
+            user = await users_collection.find_one({"namespace": namespace})  # Замена subdomain на namespace
             if not user:
-                logger.warning(f'"Пользователь с субдоменом {subdomain} не найден"')
+                logger.warning(f'"Пользователь с namespace {namespace} не найден"')
+                errors_total.labels(error_type="user_not_found").inc()
                 continue
-            
+
             if deployment.get("type", "microservice") == "microservice":
                 BILLING_COST = tarifs[deployment.get("tarif", "standart")]['hourPrice']
             else:
                 BILLING_COST = tarifs_db[deployment.get("tarif", "standart")]['hourPrice']
 
             total_cost = intervals_passed * BILLING_COST
-            user_balance = user["balance"]
+            user_balance_value = user["balance"]
 
-            if user_balance >= total_cost:
+            # Обновляем gauge с текущим балансом пользователя
+            user_balance.labels(namespace=namespace).set(user_balance_value)
+
+            if user_balance_value >= total_cost:
                 await users_collection.update_one(
                     {"_id": user["_id"]},
                     {"$inc": {"balance": -total_cost}}
@@ -163,9 +168,11 @@ async def billing_loop():
                     {"_id": deployment["_id"]},
                     {"$set": {"lastTimePay": lastTimePay + BILLING_INTERVAL * intervals_passed}}
                 )
-                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {user["subdomain"]}"')
+                # Регистрируем полное списание
+                cost_total.labels(namespace=namespace).inc(total_cost)
+                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {namespace}"')
             else:
-                max_intervals = floor(user_balance / BILLING_COST)
+                max_intervals = floor(user_balance_value / BILLING_COST)
                 if max_intervals > 0:
                     partial_cost = max_intervals * BILLING_COST
                     await users_collection.update_one(
@@ -176,21 +183,23 @@ async def billing_loop():
                         {"_id": deployment["_id"]},
                         {"$set": {"lastTimePay": lastTimePay + BILLING_INTERVAL * max_intervals}}
                     )
-                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {user["subdomain"]}"')
+                    # Регистрируем частичное списание
+                    partial_cost_total.labels(namespace=namespace).inc(partial_cost)
+                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {namespace}"')
                 else:
                     await deployments_collection.update_one(
                         {"_id": deployment["_id"]},
                         {"$set": {
-                                "status": "waitToPay",
-                                "uptime_start": datetime(1970, 1, 1, tzinfo=timezone.utc),
-                            }
-                        }
+                            "status": "waitToPay",
+                            "uptime_start": datetime(1970, 1, 1, tzinfo=timezone.utc),
+                        }}
                     )
+                    # Регистрируем остановку из-за недостатка средств
+                    no_funds_total.labels(namespace=namespace).inc()
 
                     k8s_manager_url = "http://k8s-manager-service.default.svc.cluster.local:80/set/scale"
-                    
                     data = {
-                        "namespace": subdomain,
+                        "namespace": namespace,  # Замена subdomain на namespace
                         "deployment_name": deployment.get("deployment_name"),
                         "replicas": 0,
                     }
@@ -199,13 +208,14 @@ async def billing_loop():
                             response = await client.post(k8s_manager_url, json=data)
                             response.raise_for_status()
                             data_response = response.json()
-
                     except httpx.HTTPStatusError as e:
                         logger.error(f'"K8s manager error: {e.response.text}"')
+                        errors_total.labels(error_type="k8s_manager_error").inc()
                     except Exception as e:
                         logger.error(f'"Failed to contact k8s-manager: {str(e)}"')
+                        errors_total.labels(error_type="k8s_contact_failed").inc()
 
-                    logger.warning(f'"[NOFUNDS] Недостаточно средств у пользователя {user["subdomain"]}"')
+                    logger.warning(f'"[NOFUNDS] Недостаточно средств у пользователя {namespace}"')
 
         await asyncio.sleep(60)
 
