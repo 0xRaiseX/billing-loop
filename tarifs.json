@@ -1,25 +1,25 @@
 {
   "mini": {
-    "hourPrice": 0.104,
-    "monthPrice": 75,
+    "hourPrice": 0.27,
+    "monthPrice": 199,
     "CPU": 0.2,
     "RAM": 256
   },
   "standart": {
-    "hourPrice": 0.15,
-    "monthPrice": 105,
+    "hourPrice": 0.55,
+    "monthPrice": 399,
     "CPU": 0.5,
     "RAM": 512
   },
   "hard": {
-    "hourPrice": 0.21,
-    "monthPrice": 150,
+    "hourPrice": 0.97,
+    "monthPrice": 699,
     "CPU": 1,
     "RAM": 1024
   },
   "premium": {
-    "hourPrice": 0.42,
-    "monthPrice": 300,
+    "hourPrice": 1.80,
+    "monthPrice": 1299,
     "CPU": 2,
     "RAM": 2048
   }
