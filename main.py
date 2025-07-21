@@ -57,16 +57,25 @@ async def load_metrics_state():
         value = metric["value"]
         labels = metric.get("labels", {})
 
-        if metric_name == "billing_deployments_processed_total":
-            deployments_processed.inc(value)
-        elif metric_name == "billing_errors_total":
-            errors_total.labels(**labels).inc(value)
-        elif metric_name == "billing_cost_total":
-            cost_total.labels(**labels).inc(value)
-        elif metric_name == "billing_partial_cost_total":
-            partial_cost_total.labels(**labels).inc(value)
-        elif metric_name == "billing_no_funds_total":
-            no_funds_total.labels(**labels).inc(value)
+        # Ensure labels is a dictionary
+        if not isinstance(labels, dict):
+            logger.warning(f"Invalid labels format for metric {metric_name}: {labels}. Expected a dictionary, got {type(labels)}. Skipping.")
+            continue
+
+        try:
+            if metric_name == "billing_deployments_processed_total":
+                deployments_processed.inc(value)
+            elif metric_name == "billing_errors_total":
+                errors_total.labels(**labels).inc(value)
+            elif metric_name == "billing_cost_total":
+                cost_total.labels(**labels).inc(value)
+            elif metric_name == "billing_partial_cost_total":
+                partial_cost_total.labels(**labels).inc(value)
+            elif metric_name == "billing_no_funds_total":
+                no_funds_total.labels(**labels).inc(value)
+        except Exception as e:
+            logger.error(f"Failed to load metric {metric_name} with labels {labels}: {str(e)}")
+            errors_total.labels(error_type="metric_load_failed").inc()
 
 async def save_metrics_state():
     """Сохранение текущих значений метрик в MongoDB."""
