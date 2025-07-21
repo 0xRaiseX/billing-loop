@@ -21,7 +21,7 @@ no_funds_total = Counter('billing_no_funds_total', 'Total number of deployments 
 MONGO_URL = os.getenv("MONGO_URL")
 DB_NAME = os.getenv("DB_NAME")
 BILLING_INTERVAL = timedelta(minutes=60)
-METRICS_SAVE_INTERVAL = 300
+METRICS_SAVE_INTERVAL = 900
 
 if DB_NAME is None:
     raise ValueError("DB_NAME environment variable is not set.")
@@ -181,7 +181,7 @@ async def billing_loop():
                 )
                 # Регистрируем полное списание
                 cost_total.labels(namespace=user['namespace']).inc(total_cost)
-                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {user['namespace']}"')
+                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {str(id)}"')
             else:
                 max_intervals = floor(user_balance_value / BILLING_COST)
                 if max_intervals > 0:
@@ -196,7 +196,7 @@ async def billing_loop():
                     )
                     # Регистрируем частичное списание
                     partial_cost_total.labels(namespace=user['namespace']).inc(partial_cost)
-                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {user['namespace']}"')
+                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {str(id)}"')
                 else:
                     await deployments_collection.update_one(
                         {"_id": deployment["_id"]},
