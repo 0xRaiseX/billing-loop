@@ -181,7 +181,7 @@ async def billing_loop():
                 )
                 # Регистрируем полное списание
                 cost_total.labels(namespace=user['namespace']).inc(total_cost)
-                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {namespace}"')
+                logger.info(f'"[OK] Списано {total_cost} за {intervals_passed} ч. у пользователя {user['namespace']}"')
             else:
                 max_intervals = floor(user_balance_value / BILLING_COST)
                 if max_intervals > 0:
@@ -196,7 +196,7 @@ async def billing_loop():
                     )
                     # Регистрируем частичное списание
                     partial_cost_total.labels(namespace=user['namespace']).inc(partial_cost)
-                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {namespace}"')
+                    logger.info(f'"[PARTIAL] Списано {partial_cost} за {max_intervals} ч. у пользователя {user['namespace']}"')
                 else:
                     await deployments_collection.update_one(
                         {"_id": deployment["_id"]},
