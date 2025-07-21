@@ -55,8 +55,9 @@ async def load_metrics_state():
     async for metric in metrics_collection.find():
         metric_name = metric["name"]
         value = metric["value"]
-        labels = metric.get("labels", {})
-
+        raw_labels = metric.get("labels", {})
+        labels = dict(raw_labels) if isinstance(raw_labels, list) else raw_labels
+        
         if metric_name == "billing_deployments_processed_total":
             deployments_processed.inc(value)
         elif metric_name == "billing_errors_total":
