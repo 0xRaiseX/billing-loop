@@ -34,6 +34,7 @@ with open('tarifs_db.json', 'r') as f:
     tarifs_db = json.load(f)
 
 # Подключение к MongoDB
+print(MONGO_URL)
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 users_collection = db["users"]
